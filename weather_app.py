@@ -1,12 +1,13 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import geonamescache
 import tkinter.font as tkfont
 from PIL import Image, ImageTk, ImageFilter
-
+import datetime
 from time import strftime
-
-
+import io
+import json
+import requests as r
 
 # ------------------------------------------------------------------
 # Build ❰country → [city list]❱ mapping once at start‑up using geonamescache
@@ -46,6 +47,7 @@ class WeatherApp:
 
         # # Set the background image here by updating the filename in the img_bg path.
         # Available options: "bg01.jpg", "bg02.jpg", or "bg03.jpg".
+        # ⚠️ If you change the background image, also adjust the weather icon background color (see line 239) to match.
 
         img_bg = Image.open("bg03.jpg").resize((512, 512), Image.Resampling.LANCZOS)
         self.photo_bg = ImageTk.PhotoImage(img_bg)
@@ -109,10 +111,8 @@ class WeatherApp:
 
         # Weather fetch button
         btn = tk.Button(self.frame, text="Get Weather", font=("Times New Roman", 12, "bold"),
-                        bg="#2196F3", fg="#FFFFFF",
-                        # command=self.,
-                        activebackground="#2196F3", activeforeground="#FFFFFF",)
-                        
+                        bg="#2196F3", fg="#FFFFFF", activebackground="#2196F3", activeforeground="#FFFFFF",
+                        command=self.Weather_info)
         btn.place(rely=0.18, relx=0.8, anchor="center")
 
         # -------------------------------------------------------------
@@ -205,6 +205,76 @@ class WeatherApp:
         if city_list:
             self.city.set("Select City")
 
+    # Convert wind degree to compass direction
+    def degrees_to_direction(self, degrees):
+        directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW", "N"]
+        index = int(((degrees % 360) / 45))
+        return directions[index]
+
+    # Convert UNIX timestamp to local time using timezone offset
+    def get_sun_time(self, unix, timezone, format="%I:%M %p"):
+        timezone_offset = datetime.timedelta(seconds=timezone)
+        utc_timezone = datetime.timezone.utc
+        sun_local = datetime.datetime.fromtimestamp(unix, utc_timezone) + timezone_offset
+        return sun_local.strftime(format)
+
+    # Main function to fetch and display weather data
+    def Weather_info(self):
+        city = self.city_name.get()
+        with open("config.json", "r") as file:
+            config = json.load(file)
+        API_key = config["OPENWEATHER_API_KEY"]
+        if city == "Select City" or self.country_name.get() == "Select Country":
+            messagebox.showerror("Error", "Please enter country and city information first.")
+        else:
+            try:
+                # Fetch weather data
+                data = r.get(f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={API_key}").json()
+
+                # Weather icon
+                icon_code = data["weather"][0]["icon"]
+                icon_url = f"https://openweathermap.org/img/wn/{icon_code}@2x.png"
+                try:
+                    response = r.get(icon_url)
+                    image = Image.open(io.BytesIO(response.content)).resize((40, 40))
+                    self.icon_photo = ImageTk.PhotoImage(image)
+                    # Set the background color of the weather icon to match the selected background image:
+                    # For "bg01.jpg" → "#54A19A", "bg02.jpg" → "#38A9F4", "bg03.jpg" → "#106CB7"
+                    self.icon_label = tk.Label(self.frame, image=self.icon_photo, bg="#106CB7")
+                    self.icon_label.place(relx=0.1, rely=0.4, anchor="center")
+                except Exception as err:
+                    print("Could not load weather icon:", err)
+
+                # Update weather info on canvas
+                self.text_canvas.itemconfig(self.location_val, text=f"📍 {data['name']}, {data['sys']['country']}")
+                self.text_canvas.itemconfig(self.Description_val, text=f"{data['weather'][0]['main']}")
+                self.text_canvas.itemconfig(self.Detail_val, text=f"({data['weather'][0]['description']})")
+                self.text_canvas.itemconfig(self.Temp_val, text=f"{float(data['main']['temp'])-273.15:.1f}°C (Feels like:{float(data['main']['feels_like'])-273.15:.0f}°C)")
+                self.text_canvas.itemconfig(self.Min_val, text=f"{float(data['main']['temp_min'])-273.15:.1f}°C")
+                self.text_canvas.itemconfig(self.Max_val, text=f"{float(data['main']['temp_max'])-273.15:.1f}°C")
+
+                # AQI (Air Quality Index)
+                lat = data["coord"]["lat"]
+                lon = data["coord"]["lon"]
+                aqi_data = r.get(f"http://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={API_key}").json()
+                aqi_index = aqi_data["list"][0]["main"]["aqi"]
+                aqi_meaning = {1: "Good", 2: "Fair", 3: "Moderate", 4: "Poor", 5: "Very Poor"}
+                aqi_colors = {1: "#84ff00", 2: "#ffff00", 3: "#f75606", 4: "#ff0000", 5: "#000000"}
+                self.text_canvas.itemconfig(self.airQuality_val, text=aqi_meaning[aqi_index], fill=aqi_colors[aqi_index])
+
+                # Other weather details
+                self.text_canvas.itemconfig(self.humidity_val, text=f"{data['main']['humidity']} %")
+                self.text_canvas.itemconfig(self.wind_val, text=f"{data['wind']['speed']:.1f} m/s {self.degrees_to_direction(int(data['wind']['deg']))}")
+                self.text_canvas.itemconfig(self.Visibility_val, text=f"{(data['visibility'])/1000} km")
+                self.text_canvas.itemconfig(self.Cloud_val, text=f"{data['clouds']['all']} %")
+
+                # Sunrise and Sunset
+                time_zone = data["timezone"]
+                self.text_canvas.itemconfig(self.Sunrise_val, text=self.get_sun_time(data["sys"]["sunrise"], time_zone))
+                self.text_canvas.itemconfig(self.Sunset_val, text=self.get_sun_time(data["sys"]["sunset"], time_zone))
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Couldn’t fetch weather:\n{e}")
 
 # -------------------------------------------------------------
 # Run the application
